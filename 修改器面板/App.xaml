@@ -1,0 +1,15 @@
+<Application x:Class="PvzPanel.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             StartupUri="MainWindow.xaml">
+  <Application.Resources>
+    <ResourceDictionary>
+      <ResourceDictionary.MergedDictionaries>
+        <!-- 旧深色皮肤：迁移期间保留，Task 6 删除 -->
+        <ResourceDictionary Source="Skin.xaml"/>
+        <!-- 新浅色 Win10 皮肤（移植自杂交版修改器） -->
+        <ResourceDictionary Source="SkinHybrid.xaml"/>
+      </ResourceDictionary.MergedDictionaries>
+    </ResourceDictionary>
+  </Application.Resources>
+</Application>

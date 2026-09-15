@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>抽卡版修改器</AssemblyName>
+    <RootNamespace>PvzPanel</RootNamespace>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <Version>1.0.0</Version>
+    <SatelliteResourceLanguages>zh-Hans</SatelliteResourceLanguages>
+    <!-- HashAlgorithm.Create 在这个 net8 工程里是过时的，但共享层要与游戏侧保持一致 -->
+    <NoWarn>$(NoWarn);SYSLIB0045;CS0618</NoWarn>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\共享\*.cs" LinkBase="共享" />
+  </ItemGroup>
+
+</Project>

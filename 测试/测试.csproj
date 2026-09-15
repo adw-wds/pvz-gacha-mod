@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>PvzTests</RootNamespace>
+    <AssemblyName>测试</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- HashAlgorithm.Create 在 net8 已标记过时，但游戏那边只有这个可用，忽略告警 -->
+    <NoWarn>$(NoWarn);SYSLIB0045;CS0618</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\共享\*.cs" LinkBase="共享" />
+    <Compile Include="..\修改器面板\PanelClient.cs" Link="PanelClient.cs" />
+    <Compile Include="..\修改器面板\SaveEditorLogic.cs" Link="SaveEditorLogic.cs" />
+    <!-- PanelClient 用 GameInfo.IsRunning() 判断游戏进程是否在（不吃 Unity，可以进测试） -->
+    <Compile Include="..\修改器面板\GameInfo.cs" Link="GameInfo.cs" />
+  </ItemGroup>
+</Project>

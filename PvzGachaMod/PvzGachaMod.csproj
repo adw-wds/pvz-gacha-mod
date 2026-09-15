@@ -1,0 +1,71 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- 关键：游戏的 Mono 没有 netstandard.dll 门面，所以不能用 netstandard2.0；
+         而本机又没装 .NET Framework 目标包。于是直接拿「游戏自己的 mscorlib/System/System.Core」
+         当编译目标（NoStdLib + 显式 corlib）。好处：一旦用了游戏被裁掉的 API，编译期就报错。 -->
+    <TargetFramework>net472</TargetFramework>
+    <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
+    <NoStdLib>true</NoStdLib>
+    <FrameworkPathOverride>$(UnityManaged)</FrameworkPathOverride>
+    <AssemblyName>PvzGachaMod</AssemblyName>
+    <RootNamespace>PvzGachaMod</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <Version>1.0.0</Version>
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
+    <GameDir Condition="'$(GameDir)' == ''">$(GACHA_GAME_DIR)</GameDir>
+    <UnityManaged>$(GameDir)\抽卡版PVZ_Data\Managed</UnityManaged>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\共享\*.cs" LinkBase="共享" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 框架程序集：直接用游戏目录里的（含被裁剪过的 mscorlib） -->
+    <Reference Include="mscorlib">
+      <HintPath>$(UnityManaged)\mscorlib.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="System">
+      <HintPath>$(UnityManaged)\System.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="System.Core">
+      <HintPath>$(UnityManaged)\System.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 不要引用外观程序集 UnityEngine.dll：它里面有同名空壳类型，会把 GUILayout 等
+         的类型解析抢过去，导致"类型存在但成员全缺"的假错。所需类型都在各模块里。 -->
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(UnityManaged)\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(UnityManaged)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.IMGUIModule">
+      <HintPath>$(UnityManaged)\UnityEngine.IMGUIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.JSONSerializeModule">
+      <HintPath>$(UnityManaged)\UnityEngine.JSONSerializeModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule">
+      <HintPath>$(UnityManaged)\UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(UnityManaged)\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>
