@@ -643,3 +643,454 @@ dotnet "D:\杂交版关卡\tools\ilspy\ilspycmd9\tools\net8.0\any\ilspycmd.dll" 
 ---
 
 > 文档与源码不一致时，**以源码 + 反编译取证为准**，并修正本文档对应小节。
+
+---
+---
+
+# 附录 1 · 逐子系统详解
+
+> 格式固定 8 小节：用户看到什么 / 开关与数据流 / 真实结构（含来源）/ 实现链路 / 代码骨架 / 历史坑 / 验证方法 / 扩展指引。
+> AI 读法：先扫小节标题建索引，动手改哪个再精读哪节。
+
+---
+
+## 1.1 免费抽卡（BuyPrefix / BuyPostfix）
+
+### 1.1.1 用户看到什么
+商店买卡包不扣钱（或按设置"只扣一次/不扣"）。
+
+### 1.1.2 开关与数据流
+`FeatureCatalog` 里的开关 → `ModSettings` → **消费点在注入钩子里**（`Hooks.BuyPrefix` / `BuyPostfix`）。
+
+### 1.1.3 真实结构（来源）
+| 项 | 值 |
+|---|---|
+| 目标方法 | `shopBuyBottom.OnMouseDown()`（**实例方法**） |
+| 注入方式 | **方法开头**插 `BuyPrefix()`；**每个 `ret` 前**插 `BuyPostfix()`（共 **3 处 ret**） |
+| 来源 | `注入器\Program.cs` 的 Rules 表（规则 #1、#2） |
+
+### 1.1.4 实现链路
+```
+玩家点购买按钮
+  → shopBuyBottom.OnMouseDown()
+      [注入] BuyPrefix()      ← 读存档 coin，按设置垫钱 / 记录购买
+      ...游戏原逻辑（扣钱、出卡）...
+      [注入] BuyPostfix()     ← 每个 return 分支都执行：统一收尾/回补
+```
+
+### 1.1.5 代码骨架
+```csharp
+// Hooks.cs
+public static void BuyPrefix()
+{
+    try { ModActions.OnBuyBegin(); }          // 极轻：读设置 + 必要时垫钱
+    catch (Exception ex) { Diag.Error("BuyPrefix", ex); }
+}
+public static void BuyPostfix()
+{
+    try { ModActions.OnBuyEnd(); }
+    catch (Exception ex) { Diag.Error("BuyPostfix", ex); }
+}
+```
+
+### 1.1.6 历史坑
+1. **只插 Prefix 不插 Postfix** → 有一部分分支（提前 return）走不到收尾逻辑，表现为"有时扣有时不扣"。
+   **教训：多返回值方法必须遍历全部 `ret`。**
+2. **钩子里做重活**（读写文件/反射遍历）→ 每次点击都执行，会卡 UI 帧；钩子只做"判断 + 转发"。
+3. **不 try/catch** → 钩子异常会影响游戏原方法（购买流程坏掉）。
+4. **改规则后忘了重跑 `发布.ps1`** → 安装器里还是旧规则（见 1.15）。
+
+### 1.1.7 验证方法
+- 注入器 `verify` 报 `已注入 5`；
+- 真机：点购买 → 金币不减、卡包到手；
+- 关开关 → 立刻恢复扣钱（**双向验证**）。
+
+### 1.1.8 扩展指引
+所有"点击/交互类"功能都套这个模式：**Prefix（前置准备）+ 每个 ret 前的 Postfix（收尾）**。
+
+---
+
+## 1.2 指定稀有度（OverrideTier + 旁路机制）
+
+### 1.2.1 用户看到什么
+抽卡只出指定档位的卡（如必出最高档）。
+
+### 1.2.2 真实结构（来源）
+| 项 | 值 |
+|---|---|
+| 目标方法 | `Wins.getXiyouGroup(0..5)`（返回某档的卡池） |
+| 档位 | **6 档**，卡数分别为 **14 / 24 / 42 / 39 / 19 / 4** |
+| 最高档（第 5 档） | 卡 id 集合 `{32, 46, 101, 124}` |
+| 加权抽卡 | `Wins.Chouka()`（**private 实例方法**） |
+| 注入方式 | 方法开头插 `OverrideTier(ref int:0)`（改第 0 个参数） |
+
+### 1.2.3 实现链路
+```
+游戏抽卡 → Chouka() → getXiyouGroup(i)（i 依次 0..5 拿六个池子加权）
+    [注入] OverrideTier(ref i)  ← 按设置改写档位
+```
+
+### 1.2.4 代码骨架
+```csharp
+public static void OverrideTier(ref int tier)
+{
+    try
+    {
+        if (Hooks.BypassTierOverride) return;        // ★ 旁路：本工程自己枚举全集时放行
+        if (!ModSettings.GachaTierEnabled) return;   // 开关关 → 不改写
+        tier = ModSettings.GachaTier;                // 0..5
+        Diag.Count("tierCalls");
+    }
+    catch (Exception ex) { Diag.Error("OverrideTier", ex); }
+}
+```
+
+### 1.2.5 ★★ 历史坑：**功能 A 的数据来自功能 B 的注入点**
+"图鉴全解锁"（1.5）需要**枚举六个档位拼出全部植物**，而它调的 `getXiyouGroup` **正是 `OverrideTier` 的注入点**
+→ 用户设了档位（如 4 档）后，六次调用全被改写成同一档 → 全集从 153 塌缩到 29（而 29 张早就解锁了）
+→ 表现为"**解锁全部卡牌没用**"（其实功能在跑，只是算出来是空集差）。
+**修法**：`Hooks.BypassTierOverride` 旁路标志，枚举期间置真让钩子**直接放行**（连 `tierCalls` 计数都不加，否则诊断虚高）。
+**通用教训**：只要"功能 A 依赖游戏方法 M"而"M 又是功能 B 的注入目标"，就必须有旁路机制，否则 B 一开 A 就悄悄算错（**不报错，只是结果变小**）。
+
+### 1.2.6 验证方法
+设成 5 档 → 抽卡必出那 4 张之一；关开关 → 恢复原概率；
+**同时**：图鉴全解锁仍能解锁 154 张（验证旁路没坏）。
+
+---
+
+## 1.3 自定义货架（OverrideShelfInPlace + 哨兵值）
+
+### 1.3.1 用户看到什么
+面板里给货架 6 个槽位各指定商品，游戏商店就按指定的刷。
+
+### 1.3.2 真实结构（来源）
+| 项 | 值 |
+|---|---|
+| 生成货架 | `shangdian.shopChouka(GameStart.GameData)` → `int[6]` |
+| **9999 = 空格** | `huojia.UpdateText` 里 `id == 9999` 显示"一片空白" |
+| 商品 id | 0–12（8/10/11/12 = 劣质/普通/稀有/史诗卡包；9 = 叶子保护伞） |
+| 注入方式 | `shangdian.buhuo` **方法开头**插 `OverrideShelfInPlace(int[]:0)`（原地改数组） |
+| 刷新 | `shangdian.shuaxinHuojia()`（改完要主动调才会立刻看到） |
+
+### 1.3.3 代码骨架（★ 哨兵消解是重点）
+```csharp
+public static void OverrideShelfInPlace(int[] shelf)
+{
+    try
+    {
+        if (!ModSettings.ShelfCustomEnabled) return;
+        var want = ModSettings.ShelfItems;              // 长度 6，值 = 商品 id 或 -1
+        int orig = ReadShelfFromSave();                 // 读不到时兜底 9999（空格）
+        for (int i = 0; i < shelf.Length && i < want.Length; i++)
+        {
+            if (want[i] == ModLogic.ShelfKeepId) { Diag.Count("ShelfSkipped"); continue; }  // -1 = 不修改
+            shelf[i] = want[i];                          // ★ 写进游戏前已消解哨兵
+        }
+        ModActions.RequestRefreshShelf();                // 触发 shuaxinHuojia（下一帧/入队）
+    }
+    catch (Exception ex) { Diag.Error("OverrideShelf", ex); }
+}
+```
+
+### 1.3.4 ★★ 历史坑：哨兵值复用了游戏语义值
+面板当初把"留空（不修改）"实现成 **9999** → 默认值全 9999 → 用户点一下"应用到货架" → **6 格全变空格**（用户原话"**刷新空气**"）。
+**修法**：新增独立哨兵 `ModLogic.ShelfKeepId = -1`（商品 0..12、空格 9999，不冲突），遇到 -1 跳过并计数；
+面板默认全 -1，并把 9999 明确标注为"空格"。
+**并且**：`ModActions.SetShelf` 写存档前**必须消解哨兵**（-1 → 货架原值，读不到时兜底 9999），
+否则游戏拿到 -1 会当成未知商品。**这条路径能被脚本 `do shop_shelf` 走到，别以为 UI 不给就安全。**
+
+### 1.3.5 验证方法
+面板设 6 个具体商品 → 进商店看到对应货架；设成"空格"→ 真的空白；（不用重进游戏，因为改存档立即生效，但要调 `shuaxinHuojia` 刷新）。
+
+---
+
+## 1.4 商店刷新免费（FreeRefreshPrefix）
+
+### 1.4.1 真实结构（来源）
+| 项 | 值 |
+|---|---|
+| 目标 | `shangdianshuaxin.OnMouseDown` |
+| 原逻辑 | `if (coin >= 300) { ...; coin -= 300; }`（**300 是字面量，改不了**） |
+| 注入方式 | 方法**开头**插 `FreeRefreshPrefix()` |
+| 技巧 | **先垫钱**：方法开头把存档 `coin += 300` → 游戏随后扣 300 → **净变化 0**，并且顺带把"没钱也能刷"的门槛也过了 |
+
+### 1.4.2 代码骨架
+```csharp
+public static void FreeRefreshPrefix()
+{
+    try
+    {
+        if (!ModSettings.FreeShopRefresh) return;
+        var save = SaveData.Load();                 // 游戏不缓存存档 → 每次读都是最新的
+        if (save.coin > int.MaxValue - 300) return; // ★ 顶到 int 上限就不垫，避免溢出
+        save.coin += 300;
+        SaveData.Save(save);                        // 含 save.json.md5 重算（见 1.7/6.2）
+        Diag.Count("freeRefreshPrefix");
+    }
+    catch (Exception ex) { Diag.Error("FreeRefreshPrefix", ex); }
+}
+```
+
+### 1.4.3 历史坑
+1. **撞 `int` 上限** → 金币变负数；必须判断"接近上限就不垫"。
+2. **忘了重算 `save.json.md5`** → 游戏显示"作弊者"字样（本工程 `SaveData.Save` 会一并处理）。
+3. **想直接改 300 这个字面量** → 做不到（IL 里是常量，且游戏读的是扣款后的值）；垫钱法才是稳的。
+
+### 1.4.4 验证方法
+没钱也能刷新商店；金币净额不变；无"作弊者"字样。
+
+---
+
+## 1.5 图鉴全解锁（三层根因，本工程最复杂的 bug）
+
+见 **6.7**（正文已详述三层根因与修法）。这里补"实现位置"与"任务拆解"：
+
+| 层 | 位置 | 修法 |
+|---|---|---|
+| ① 旁路 | `Hooks.BypassTierOverride` | 枚举全集期间置真 |
+| ② 权威来源 | `ModActions.PlantUniverse()` | 依次尝试 `guanqiaStart.cards.Length` → `GameObject.Find("CanvasCard")…` → `First.plantId.Length`，取最大值 |
+| ③ 刷新 | `ModActions.UnlockAllPlants()` 末尾 | 若当前在 `植物图鉴`/`僵尸图鉴` → `SceneManager.LoadScene(sc.name)` |
+
+**审计要点**：拿不到权威卡牌表时**必须明说"可能有漏卡"**，不能装作全集（实测漏过 47 号）。
+
+---
+
+## 1.6 卡包全解锁（★ 语义反了的历史坑）
+
+### 1.6.1 真相（反编译）
+`shangdian.shopChouka` 的抽签循环里：
+```csharp
+if (flag3 && num2 == 8) flag7 = true;   // flag7 = true 意思是"这一格重抽"
+```
+五个标记 `liekabao` / `ptkabao` / `xykabao` / `sskabao` / `canbaohusan` + `chushisun == 7`
+是**排除条件**：`true = 已买过 → 别再刷出来`。
+所以"让四种卡包都能刷进货架"要置 **false**。
+
+### 1.6.2 ⚠️ 设计文档曾写反
+设计文档 line 124 写"置 **true** = 卡包全解锁" → **照文档写会把卡包全踢出货架**。
+已按实际代码纠正。**教训见第 11 章（文档写的是"理解"，不是"事实"）。**
+
+### 1.6.3 实现要点（"空壳功能"是怎么补上的）
+- `ModActions.UnlockAllPacks` **早就存在**（改存档 `liekabao/...=true` + 清 `shangdianYishou`），
+  但只挂在**一次性动作** `unlock.allPacks` 上，**没接到开关** → 用户开开关毫无反应（= 空壳）。
+- 修法：在 `ApplySaveFlags()` 里做**边沿触发**（`_unlockPacksApplied`，关掉再开可重触发），
+  并让 `UnlockAllPacks` 末尾调 `FindObjectOfType<shangdian>().shuaxinHuojia()` **立刻重抽**（不用退出重进）。
+- 注意语义方向：这几个标记是**排除**条件 → 实现里要**置 false**。
+
+### 1.6.4 验证方法
+开关打开 → 商店能刷出四种卡包（多刷新几次）；关掉 → 恢复原样。
+
+---
+
+## 1.7 存档读写与反作弊哈希
+
+### 1.7.1 要点
+| 项 | 值 |
+|---|---|
+| 路径 | `%USERPROFILE%\AppData\LocalLow\MiaoDouzi\抽卡版PVZ\save.json` |
+| 类 | `GameStart.GameData`（`JsonUtility`） |
+| 校验 | `save.json.md5` = 对文件字节**连做 3 次 MD5** 的小写 hex |
+| 不符后果 | `First.ZUOBIZHE = true` → 仅显示"作弊者"字样，**不封锁玩法** |
+| **游戏不缓存存档** | 每个操作都 `ReadAllText` → `FromJson` → 改 → 写回 → **外部改文件立刻生效** |
+
+### 1.7.2 代码骨架（统一个入口，别各处自己写）
+```csharp
+// 共享\SaveData.cs
+public static GameSave Load() { /* 读文件 → FromJson */ }
+public static void Save(GameSave s)
+{
+    var bytes = /* 序列化并写文件 */;
+    SaveHash.WriteMd5Twice(bytes);   // ★ 必须同步写 save.json.md5（3 次 MD5）
+}
+```
+
+### 1.7.3 历史坑
+1. **改了 save.json 不重算 md5** → 游戏显示"作弊者"（用户会以为被惩罚了）→ 必须在 `SaveData.Save` 里统一处理。
+2. **缓存存档对象跨操作** → 游戏自己会重读文件，你的缓存会把它覆盖回去 → **每次都重新 Load**。
+3. **`JsonUtility` 字段名不匹配** → 静默丢字段（反序列化不报错）；改结构前先看 `save.json` 实际字段。
+
+---
+
+## 1.8 速度加速（Time.timeScale）与暂停语义
+
+### 1.8.1 真实结构
+| 事实 | 值 |
+|---|---|
+| **`Time.timeScale = 0` 是游戏的暂停/失败界面值** | `anniuClick.cs:627`、`shibai.cs:15` |
+| 推论 | 加速补丁**必须**判断 `timeScale <= 0` 时**不覆盖**，否则会在暂停界面里"解除暂停" |
+
+### 1.8.2 代码骨架
+```csharp
+static void ApplySpeed()
+{
+    if (!ModSettings.SpeedEnabled) return;
+    if (Time.timeScale <= 0f) return;              // ★ 暂停/失败界面：不动
+    Time.timeScale = ModSettings.SpeedMultiplier;
+}
+```
+
+### 1.8.3 历史坑
+1. **不判断 `<= 0`** → 暂停界面失效、失败界面卡住。
+2. **游戏内置调试菜单也有"2X 加速"**（`anniuClick`，门控 `First.zuobi`）→ 两者会互相覆盖，注意优先级/开关提示。
+3. **改倍率不恢复** → 关闭功能后仍是加速态（要在关掉时把 `timeScale` 归 1）。
+
+---
+
+## 1.9 脚本引擎（ScriptParser + InstructionSet + ScriptEngine）
+
+### 1.9.1 结构
+| 文件 | 职责 |
+|---|---|
+| `共享\InstructionSet.cs` | 指令定义（合法指令 + 参数形态） |
+| `共享\ScriptParser.cs` | 解析脚本文本 → 指令序列（**纯逻辑，可离线单测**） |
+| `PvzGachaMod\ScriptEngine.cs` | 运行期执行（含 `do <动作>`） |
+| `测试\ScriptTests.cs` | 解析与执行的断言 |
+
+### 1.9.2 要点
+- 脚本走**同一条命令通道**（最终都落到 `CommandApi`），所以**失败通道同样适用**（语法错要回 `lastActionOk=false` + 原因）。
+- 脚本能走到 UI 到不了的路径（例如直接 `do shop_shelf`）→ **哨兵消解这类安全检查必须在动作层做，不能只依赖 UI**（1.3.4）。
+
+### 1.9.3 历史坑
+1. **语法错只报"已处理"** → 用户不知道脚本没生效（必须写失败原因）。
+2. **脚本指令直接调 UI 层方法** → 换界面就崩；指令要调 `ModActions` 的纯动作方法。
+
+---
+
+## 1.10 文件命令通道（ChannelFiles + CommandApi + PanelClient）
+
+### 1.10.1 三者关系
+```
+面板 (PanelClient)                  mod (ModRuntime + CommandApi)
+  写 修改器命令.json  ─────────────→ 每帧读 → ApplySnapshot → 调 ModActions
+  读 修改器状态.json  ←───────────── 写（值 + lastActionOk + lastResult + diag + modVersion）
+```
+
+### 1.10.2 工程要求（缺一不可）
+| 要求 | 原因 |
+|---|---|
+| **原子写**（临时文件 + 替换） | 防对面读到半截 JSON |
+| 命令带**序号/时间戳** | 防重复执行同一条命令 |
+| 状态必须含 `modVersion` | 判断"装的是哪版" |
+| 状态必须含 `lastActionOk` / `lastResult` | 失败通道 |
+| 状态必须含 `diag` | 面板诊断页 |
+| `diag` 生成异常要降级为 `{}` | 不能连带面板读不了状态 |
+
+### 1.10.3 失焦冻结的正确处理（见 6.5）
+| 面板状态 | 判定 | 显示 |
+|---|---|---|
+| 状态文件新鲜 且 进程在 | `GameAlive` | 已连接 |
+| 进程在但状态文件停住 | `GameFrozen` | **已连接・游戏在后台暂停**（并提示"改动切回游戏后生效"） |
+| 进程不在 | 未连接 | 未连接 |
+**绝不**把 `GameFrozen` 显示成"未连接"（用户会以为 mod 坏了）。
+
+---
+
+## 1.11 诊断系统（ModDiag + 面板诊断页）
+
+### 1.11.1 埋点分类
+| 类型 | 计数 | 读法 |
+|---|---|---|
+| 钩子侧 | `calls` / `applied` / `errors` | **`calls == 0` = 注入点没被游戏走到**（不是逻辑错） |
+| 每帧类 | `runs` / `fixed` | **`fixed == 0` = 当时场上没对象**（如没进关卡） |
+| 环境 | `scene` / `objects` / `objectsKind` / `firstFound` / `notes` | 判断场景与对象状态 |
+
+### 1.11.2 面板结论模板（直接给用户看）
+- `runs == 0` → "没走到（该功能要在对应界面/关卡才生效）"
+- `applied == 0` → "走到了但没生效（作用对象不存在）"
+- `lastActionOk == false` → 直接把 `lastResult` 显示出来
+
+### 1.11.3 历史坑
+1. **埋点只加计数不加"上下文"** → 还是判断不出原因（要带 scene/objects）。
+2. **`diag` 抛异常** → 连带整个状态读不出来 → 必须降级 `{}`（把 diag 包在 try/catch 里单独生成）。
+
+---
+
+## 1.12 API 检查工具（本工程特有，且是"编译过了"的唯一保障）
+
+### 1.12.1 三个查询 + 一个校验
+```powershell
+# 校验：拿 mod 的每个成员引用去游戏程序集核对
+dotnet run --project 源码\API检查\API检查.csproj -c Release -- Verify <我们的.dll>
+# 查询
+dotnet run --project 源码\API检查\API检查.csproj -c Release -- Type <类型名>
+dotnet run --project 源码\API检查\API检查.csproj -c Release -- Member <类型> <成员>
+dotnet run --project 源码\API检查\API检查.csproj -c Release -- Has <类型> <成员>
+```
+当前状态：**✓ 83 个类型全部可解析**。
+
+### 1.12.2 为什么必须跑
+本机**没有 .NET Framework 目标包** → MSBuild 用别处的 `mscorlib` →
+会出现"**编译通过、运行 `MissingMethodException`**"。`API检查` 是唯一能在装机前发现它的手段。
+
+### 1.12.3 历史坑
+1. **只看"编译 0 错误"就装机** → 用户报"功能一用就崩"。
+2. **选了新 API 没先查** → 违反第 0 章第 10 条（不许发明 API 签名）。
+
+---
+
+## 1.13 全局启动点注册（ScriptingAssemblies + RuntimeInitializeOnLoads）
+
+### 1.13.1 做法
+```
+① 抽卡版PVZ_Data\ScriptingAssemblies.json 的 names 里加入 "PvzGachaMod"
+② 抽卡版PVZ_Data\RuntimeInitializeOnLoads.json 的 root 里登记：
+   {"assemblyName":"PvzGachaMod","nameSpace":"PvzGachaMod","className":"ModBootstrap",
+    "methodName":"Init","loadTypes":2,"isUnityClass":false}
+→ Unity 启动时调用 ModBootstrap.Init()（与场景无关；实测在主菜单 Zhucaidan 就触发）
+工具：源码\注册启动点.ps1（带 .orig 备份、幂等、-Unregister 撤销）
+```
+
+### 1.13.2 历史坑
+1. **手改不备份** → 出问题没法回滚（脚本有 `.orig`）。
+2. **不幂等** → 重复注册导致 `names` 里出现两条，或 root 里出现两个入口（可能双重初始化）。
+3. **`loadTypes` / `isUnityClass` 值写错** → 启动点不触发（照抄上面那行）。
+4. **卸载时忘了恢复** → 游戏里残留"加载不存在的程序集"的错误日志。
+
+---
+
+## 1.14 注入器（5 条规则 + 幂等 + IL 参数编号）
+
+### 1.14.1 规则表
+见 **5.2**（`shopBuyBottom.OnMouseDown` ×2 / `Wins.getXiyouGroup` / `shangdian.buhuo` / `shangdianshuaxin.OnMouseDown`）。
+
+### 1.14.2 两条铁律
+1. **每次 `patch` 都从 `.orig` 备份重置，再全量注入**
+   —— 因为"幂等检测"只看钩子方法名，**规则改了以后旧的错误注入会被当成"已注入"跳过并残留**
+   （真实事故：`buhuo` 传错实参 → 商店一开就崩）。
+2. **改完 IL 必须反编译核对实参**
+   ```powershell
+   dotnet ilspycmd -t <类型> <Assembly-CSharp.dll> | Select-String "Hooks\."
+   ```
+
+### 1.14.3 IL 参数编号规范
+| 方法类型 | `arg0` 是 |
+|---|---|
+| 实例方法 | `this` |
+| 静态方法 | 第一个真实参数 |
+→ 规范里**一律写 IL 编号**，代码里 `pIndex = IsStatic ? ilIndex : ilIndex - 1`。
+
+### 1.14.4 Cecil 版本坑
+`MakeArrayType()` / `MakeByRefType()` 在这个版本**没有** → 用 `new ArrayType(t)` / `new ByReferenceType(t)`。
+
+---
+
+## 1.15 安装器（规则编译期嵌入 → 改了规则必须重跑 `发布.ps1`）
+
+### 1.15.1 事实
+`工具\安装器\安装器.exe` 是**自包含单文件**，注入规则**在编译期嵌进去**。
+所以：**改了 `注入器\Program.cs` 的 Rules 表 → 必须重跑 `发布.ps1`**。
+
+### 1.15.2 ★ 历史事故（无任何报错）
+加了第 5 条规则、重建了 mod、装了 → `verify` 只报 **"已注入 4"**，**且没有任何错误提示**
+（旧安装器根本不知道有第 5 条）。
+
+### 1.15.3 判定方法
+| 现象 | 结论 |
+|---|---|
+| `dotnet run -c Release -- patch <acs>` 直跑源码报 **5/5**，而安装器报 **4/5** | **安装器是旧的** → 重跑 `发布.ps1` |
+| 包内安装器 `verify` 输出里**没有最新规则名**（如 `FreeRefreshPrefix`） | 同上 |
+
+### 1.15.4 验证方法
+打包后：**包内**的 `工具\安装器\安装器.exe verify <游戏目录>` → 输出必须含最新规则名且报 `已注入 5`。
+
+---
