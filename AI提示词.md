@@ -1094,3 +1094,297 @@ dotnet run --project 源码\API检查\API检查.csproj -c Release -- Has <类型
 打包后：**包内**的 `工具\安装器\安装器.exe verify <游戏目录>` → 输出必须含最新规则名且报 `已注入 5`。
 
 ---
+---
+
+# 附录 2 · 结构大表（AI 写代码前必查）
+
+> 表里有的可直接用；**表里没有的一律先去 `D:\抽卡版\_recon\src\`（反编译源码，116 个 .cs）或 `API检查` 里查**，不许猜。
+
+---
+
+## 2.1 存档 / 反作弊
+
+| 对象 | 成员 / 字段 | 类型 | 说明 |
+|---|---|---|---|
+| 存档类 | `GameStart.GameData` | class | `JsonUtility` 序列化 |
+| 存档文件 | `%USERPROFILE%\AppData\LocalLow\MiaoDouzi\抽卡版PVZ\save.json` | 文件 | **游戏不缓存**，每次操作都重读 |
+| 校验文件 | 同目录 `save.json.md5` | 文件 | = 对字节**连做 3 次 MD5** 的小写 hex |
+| 作弊标记 | `First.ZUOBIZHE` | bool | md5 不符置 true → **仅显示"作弊者"文字**，不封锁玩法 |
+| 卡包标记 | `liekabao` / `ptkabao` / `xykabao` / `sskabao` / `canbaohusan` | bool | ⚠️ **排除条件**（true = 已买过 → 别再刷）→ 要"都能刷出"应置 **false** |
+| 其他标记 | `shangdianYishou`、`chushisun`（==7） | — | 参与抽签过滤，改前先看 `shopChouka` 循环 |
+| 货币 | `coin`（及其他：`score_value`/`prism_value`/`forge_stone` 视版本） | int | 加法前注意 `int` 上限 |
+
+---
+
+## 2.2 抽卡 / 稀有度
+
+| 对象 | 成员 | 说明 |
+|---|---|---|
+| 稀有度池 | `Wins.getXiyouGroup(0..5)` | **6 档**；各档卡数 **14 / 24 / 42 / 39 / 19 / 4**（`Wins.cs:352`） |
+| 最高档 | 第 5 档卡 id 集合 | `{32, 46, 101, 124}` |
+| 加权抽卡 | `Wins.Chouka()` | **private 实例方法**（`Wins.cs:392`） |
+| 注意 | `getXiyouGroup` **是本工程 #3 注入规则的目标** | 本工程自己枚举全集时必须**旁路**（见 1.2.5 / 6.7） |
+
+---
+
+## 2.3 商店 / 货架
+
+| 对象 | 成员 | 说明 |
+|---|---|---|
+| 生成货架 | `shangdian.shopChouka(GameStart.GameData)` | 返回 `int[6]` |
+| 货架显示 | `huojia.UpdateText` | ⚠️ **`id == 9999` 显示"一片空白"**（=空格） |
+| 购买 | `shopBuyBottom.OnMouseDown()` | 注入目标（规则 #1/#2） |
+| 刷新按钮 | `shangdianshuaxin.OnMouseDown` | 原逻辑 `if (coin >= 300) { ...; coin -= 300; }`（300 是**字面量**） |
+| 主动重抽 | `shangdian.shuaxinHuojia()` | 改完货架**必须调它**才立刻看到变化 |
+| 商品 id | `0..12` | 8/10/11/12 = 劣质/普通/稀有/史诗卡包；9 = 叶子保护伞 |
+| 哨兵 | `ModLogic.ShelfKeepId = -1` | **本工程自定义**："不修改"（不要用 9999） |
+
+---
+
+## 2.4 卡牌 / 图鉴
+
+| 对象 | 成员 | 说明 |
+|---|---|---|
+| 全卡表 | `guanqiaStart.cards` | public；**按植物 id 索引**（`Instantiate(cards[plantId])` 可证） |
+| 全卡表（备用） | `GameObject.Find("CanvasCard").GetComponent<guanqiaStart>().cards` | 对象被 `SetActive(false)` 时 `FindObjectOfType` 找不到，这个找得到（游戏自己 `First.cs:1805` 就这么用） |
+| 全卡表（关卡内） | `First.plantId` | — |
+| 卡牌点击 | `CardClick.pro` | **private** `Cardproperties`；含 `nowcoolDown`（零冷却用） |
+| 图鉴遮罩 | `CardClick.Start()` 读 `scores` 设 `findThis`（`CardClick.cs:866/895`） | ⚠️ **不会重读** → 解锁后需重载场景 |
+| 图鉴场景名 | `植物图鉴` / `僵尸图鉴` | 用于判断是否需要 `LoadScene` 重载 |
+
+---
+
+## 2.5 战斗 / 数值
+
+| 对象 | 成员 | 说明 |
+|---|---|---|
+| 僵尸血量 | `Zombie.ZombieHp` | — |
+| 僵尸伤害 | `Zombie.TakeDamage(int, int, bool)` | — |
+| 植物血量 | `Planting.HP` + `maxHP` | — |
+| 阳光 | `First.Sun` | — |
+| 太阳生成 | `Sun.startTime` | **private** |
+| **心跳点** | `First.Update()` | **private**（`First.cs:1389`）—— mod 帧循环的参考点 |
+| **暂停语义** | `Time.timeScale = 0` | 是游戏的暂停/失败界面值（`anniuClick.cs:627`、`shibai.cs:15`） |
+| ⚠️ 字段陷阱 | `First.jianbukecui` | **参与出怪与阳光逻辑**（`First.cs:1430/1435/1501`）→ **不能**当零冷却开关 |
+| 内置调试菜单 | `anniuClick` | 门控 `First.zuobi`；已有秒杀僵尸/2X 加速/造阳光（注意与 mod 功能重叠） |
+
+---
+
+## 2.6 场景 / 工程文件
+
+| 对象 | 说明 |
+|---|---|
+| 场景名 | 主菜单 `Zhucaidan`、`植物图鉴`、`僵尸图鉴`、商店等（用 `SceneManager.GetActiveScene().name`） |
+| 启动点注册 | `抽卡版PVZ_Data\ScriptingAssemblies.json`（names）+ `RuntimeInitializeOnLoads.json`（root） |
+| 注入目标 | `抽卡版PVZ_Data\Managed\Assembly-CSharp.dll`（备份 `.orig`） |
+| 反编译参考 | `D:\抽卡版\_recon\src\`（116 个 .cs） |
+| MOD 落地 | `MOD\PvzGachaMod.dll` |
+| 通道文件 | `修改器命令.json` / `修改器状态.json` / `修改器设置.json` |
+
+---
+
+## 2.7 被裁剪的 API（速查，详见第 7 章）
+
+| 缺失 | 症状 |
+|---|---|
+| `TcpListener` | 编译期 CS1069 |
+| `Enumerable.Sum`（部分 LINQ） | 编译期 CS1061 |
+| `File.AppendAllText`（两个重载） | 缺失 → 追加要"读+写" |
+| `DateTime.ToString(string)` | 运行期 `MissingMethodException` |
+| `Application.productName` / `dataPath` / `runInBackground` / `targetFrameRate` | 缺失 |
+| `Time.realtimeSinceStartup` | 缺失 → 用帧计数 |
+
+---
+---
+
+# 附录 3 · 任务配方（照抄即用）
+
+## 配方 1 · 加一个功能（**三层结构**，缺一层就是假开关）
+
+| 层 | 文件 | 动作 |
+|---|---|---|
+| ① 看得见 | `共享\FeatureCatalog.cs` | 加一条功能定义（key / 中文名 / 类型 / 范围 / 默认值 / 分组） |
+| ② 存得下 | `共享\ModSettings.cs` | 加字段（走 `TrySet` 自动夹取 + 校验）→ 持久化到 `修改器设置.json` |
+| ③ 真生效 | `PvzGachaMod\ModActions.cs`（+ 必要时 `注入器\Program.cs` 加规则） | **打开方法体确认它在写游戏字段** |
+
+**自证**：面板能看到 / 重启后设置还在 / 游戏里真的有变化。
+**审计**：取 `ModSettings.cs` 全部 public 字段 → 对每个字段在排除 `ModSettings.cs`/`FeatureCatalog.cs`/`*Tests.cs` 后 grep 引用点 → **计数 0 = 空壳**。
+
+---
+
+## 配方 2 · 加一条注入规则
+
+```csharp
+// 注入器\Program.cs 的 Rules 表加一条 + 在 Hooks.cs 实现钩子
+[Rule(Type = "目标类型全名", Method = "目标方法", Hook = "Hooks.钩子方法", Position = Position.Begin)]
+```
+| 步 | 动作 | 自证 |
+|---|---|---|
+| 1 | 在 `_recon\src` 里确认目标方法签名（含参数类型） | 抄下签名 |
+| 2 | 加规则 + 钩子（**钩子极轻 + try/catch**） | 编译 0 error |
+| 3 | `dotnet run -c Release -- patch <acs>` 直跑源码 | 报 **N/N**（N = 规则总数） |
+| 4 | **反编译核对实参** | `ilspycmd -t <类型> <acs> \| Select-String "Hooks\."` |
+| 5 | **重跑 `发布.ps1`**（安装器规则编译期嵌入） | 包内 `verify` 报最新规则名 |
+| 6 | 真机验证（开关双向） | 开生效、关恢复 |
+
+**坑**：`patch` 必须**先从 `.orig` 重置再全量注入**（幂等检测只看钩子名，旧注入会残留）。
+
+---
+
+## 配方 3 · 加一个"点击类"功能（Prefix + 每个 ret 前 Postfix）
+
+见 **1.1.5** 的骨架。要点：**遍历全部 `ret`**（漏一个分支就漏一半功能）。
+
+---
+
+## 配方 4 · 加一个"返回值改写"功能
+
+```csharp
+// 场景：让某方法恒返回 true / 返回 0（如"解锁判定恒真"）
+[Rule(..., Position = ReturnValue, ReturnValue = "true")]
+```
+**要点**：返回值类型必须与目标方法一致（`bool`/`int`/`float` 处理方式不同）；改完必须 `verify` + 真机双向验证。
+
+---
+
+## 配方 5 · 改一个存档字段
+
+| 步 | 动作 |
+|---|---|
+| 1 | 看 `save.json` 实际字段名（**别按 C# 属性名猜**，`JsonUtility` 按字段名匹配） |
+| 2 | 用 `SaveData.Load()` 读 → 改 → `SaveData.Save()`（**内部分发会重算 md5**） |
+| 3 | 若改完界面没变：游戏不缓存存档 → 多半是"界面不会自动重读" → 需要主动刷新（如 `shuaxinHuojia`）或提示用户切界面 |
+
+**坑**：① 不重算 md5 → "作弊者"字样；② 缓存存档对象跨操作 → 覆盖游戏写入。
+
+---
+
+## 配方 6 · 加一个脚本指令
+
+| 步 | 动作 |
+|---|---|
+| 1 | `共享\InstructionSet.cs` 加指令定义（名称 + 参数形态） |
+| 2 | `共享\ScriptParser.cs` 支持解析它（**纯逻辑** → 在 `测试\ScriptTests.cs` 加断言） |
+| 3 | `ScriptEngine.cs` 里执行 → **调 `ModActions` 的纯动作方法**（不要调 UI 层） |
+| 4 | 语法错要写失败原因（`lastActionOk=false` + `lastResult`） |
+
+**坑**：脚本能绕过 UI 直达动作层 → **安全检查（如哨兵消解）必须在动作层**（1.3.4）。
+
+---
+
+## 配方 7 · 加一个面板控件 / 分组
+
+| 需求 | 做法 |
+|---|---|
+| 新功能开关 | 只要 `FeatureCatalog` 里有定义，面板**自动渲染**（无需改面板代码） |
+| 新的"选择型" | 在功能定义里给 `Options`（值 + 标签）→ 面板渲染**分段按钮**（用户不用输数字） |
+| 特殊交互（如货架可视化点选） | 改 `主窗\MainWindow.xaml.cs`，**遵守两条铁律**：乐观更新 + 不整页重建 |
+
+---
+
+## 配方 8 · 加一个诊断埋点
+
+```csharp
+// 钩子侧
+Diag.Count("myFeature.calls");
+// 生效时
+Diag.Count("myFeature.applied");
+// 环境
+Diag.Set("scene", SceneManager.GetActiveScene().name);
+```
+**要点**：埋点要带"上下文"（scene / objects），否则还是判断不出原因；
+`diag` 生成必须独立 try/catch → 异常时降级 `{}`（不能连带面板读不了状态）。
+
+---
+
+## 配方 9 · 加一个一次性动作（按钮）
+
+| 步 | 动作 |
+|---|---|
+| 1 | `ModActions.cs` 写方法（内部 try/catch + 结果写 `LastActionResult`） |
+| 2 | `FeatureCatalog` 里登记为"动作"类型（面板渲染成按钮） |
+| 3 | 真机点一次验证：**只执行一次**（不是每帧执行），失败能看到原因 |
+
+---
+
+## 配方 10 · 让开关"边沿触发"（只在打开瞬间执行一次）
+
+```csharp
+static bool _xxxApplied;
+void ApplySaveFlags()
+{
+    bool on = ModSettings.Xxx;
+    if (on && !_xxxApplied) { ModActions.DoXxxOnce(); }   // 上升沿
+    _xxxApplied = on;                                     // 关掉后再开可重触发
+}
+```
+**用途**：卡包全解锁、图鉴全解锁这类"改存档"的功能（不需要每帧改）。
+
+---
+
+## 配方 11 · 加一个"总开关 = 全开"的功能组
+
+见 **正文 12.x / 配方 5（融合版）** 的同一原则：
+**不允许**写成 `if (总开关 && 子开关)` —— 那会导致"只开总开关 = 什么都不做"。
+
+---
+
+## 配方 12 · 处理"游戏失焦冻结"（面板侧）
+
+| 状态 | 判定 | 显示 |
+|---|---|---|
+| 状态文件新鲜 且 进程在 | `GameAlive` | 已连接 |
+| 进程在但状态文件停住 | `GameFrozen` | **已连接・游戏在后台暂停** + "改动切回游戏后生效" + 「切到游戏」按钮 |
+| 进程不在 | 未连接 | 未连接 |
+
+**别忘了**：`PVZMOD_TEST_FOCUS=1` 时才主动切前台跑完整往返测试（默认冻结时 SKIP）。
+
+---
+
+## 配方 13 · 构建 / 安装 / 验证三件套（每次改完都跑）
+
+```powershell
+pwsh -File 源码\构建.ps1                       # ① 编译（含构建号）
+dotnet run --project 源码\API检查\API检查.csproj -c Release -- Verify <产物.dll>   # ② 成员引用核对
+& "D:\抽卡版\修改器\工具\安装器\安装器.exe" install "D:\抽卡版\电脑\抽卡0.60.0正式版"   # ③ 安装
+& "D:\抽卡版\修改器\工具\安装器\安装器.exe" verify  "D:\抽卡版\电脑\抽卡0.60.0正式版"   # → 应报 已注入 5
+```
+**核对**：状态文件 `modVersion` 构建号 == 刚构建的；`MOD\PvzGachaMod.dll` 与游戏内那份 **SHA256 一致**。
+
+---
+
+## 配方 14 · 打包发布（含核对清单）
+
+| 步 | 动作 |
+|---|---|
+| 1 | **关掉面板进程**（否则 exe 被占用，发布失败） |
+| 2 | `pwsh -File 源码\发布.ps1` |
+| 3 | 核对 `MOD\PvzGachaMod.dll` 的 SHA256 == 交付根那份 |
+| 4 | 核对**包内**安装器 `verify` 输出含最新规则名 + `已注入 5` |
+| 5 | 扫 `使用说明.md` 的过期内容：`Select-String '4/4\|待生效\|N 项\|N 个分组\|旧功能名'` |
+| 6 | 复制到 `release\最终打包_YYYYMMDD\抽卡版修改器\` + 打 zip（**用 .NET `ZipFile`**） |
+
+---
+
+## 配方 15 · 只改面板
+
+```powershell
+dotnet publish 源码\修改器面板\修改器面板.csproj -c Release -o 工具\面板 `
+  -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true --self-contained true -r win-x64
+```
+不必重装 mod（面板只走文件通道）；但**面板与 `共享\` 的契约要一致**（`共享\` 改动会同时影响两端）。
+
+---
+
+## 配方 16 · 加一段"纯逻辑"并单测
+
+| 步 | 动作 |
+|---|---|
+| 1 | 把逻辑写进 `共享\ModLogic.cs`（**不含 Unity/引擎依赖**） |
+| 2 | 在 `测试\LogicTests.cs` 加断言 |
+| 3 | `dotnet run --project 源码\测试\测试.csproj -c Release` → 全绿 |
+| 4 | 再接到 `ModActions` 里 |
+
+**为什么**：本机经常跑不动游戏（或没有游戏环境），纯逻辑单测是**唯一能离线验证**的部分。
+
+---
